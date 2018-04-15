@@ -1,0 +1,179 @@
+﻿#pragma kernel CSMain
+
+float _DeltaTime;
+float _Time;
+int _Reset;
+
+float  _Width;
+float  _Cap;
+
+
+int _CurrentVert;
+int _OldVert;
+int _NumVerts;
+
+int _MaxRods;
+
+float3 _Velocity;
+float3 _OldVelocity;
+float3 _Position;
+float3 _OldPosition;
+
+
+float3 _Sensor1;
+float3 _Sensor2;
+
+
+
+float3 _CamPos;
+float3 _CamDir;
+float _TouchDown;
+bool _Drawing;
+
+
+float _SpringDistance;
+int _VertsPerHair;
+
+int _NumAttractors;
+
+
+float4x4 transform;
+
+
+
+struct Vert{
+  float3 pos;
+  float3 oPos;
+  float3 nor;
+  float2 uv;
+  float id;
+  float width;
+  float cap; // 0 for no cap, 1 for start , 2 for end
+  float3 extraInfo;
+  float3 debug;
+};
+
+
+RWStructuredBuffer<Vert> vertBuffer;
+
+
+
+// Not too fast!
+float3 getVel( float3 p1 , float3 p2 ){
+
+  float3 v = p1 - p2;
+
+  if( length( v ) > .5){ v = normalize( v ) *.5; }
+  return v;
+}
+
+
+
+#define NR_THREADS 64
+
+#include "Chunks/springForce.cginc"
+
+float3 projectOnLine( float3 p, float3 a, float3 b )
+{
+    float3 pa = p - a, ba = b - a;
+    float v = dot(pa,ba)/dot(ba,ba);
+    float h = clamp( v, 0.0, 1.0 );
+    float3 pos = a + v * ba;
+    return pos;
+}
+
+
+
+
+
+[numthreads(NR_THREADS,1,1)]
+void CSMain (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+
+
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+  int flip = pID % 2;
+
+  if( pID < _NumVerts ){
+
+    Vert vert = vertBuffer[ pID ];
+
+    int d = ((pID - 1) + _NumVerts) % _NumVerts;
+    int u = ((pID + 1) + _NumVerts) % _NumVerts;
+    
+    Vert vertU = vertBuffer[u];
+    Vert vertD = vertBuffer[d];
+
+    if( _Reset == 1 ){
+      //vert.oPos = basePos + dif *vert.uv.x;// vert.ogPos;
+      //vert.pos  = basePos + dif *vert.uv.x;//vert.ogPos;
+    }else{
+    
+
+      float3 force = float3( 0 , 0 , 0 );
+
+      if( vertU.cap == 0){
+        
+        force += 10 * springForce( vert.pos , vertU.pos , .1 );
+      }
+
+      if( vertD.cap == 0){
+        force += 10* springForce( vert.pos , vertD.pos , .1 );
+        
+      }
+
+      if(_CurrentVert+1 == int(vert.id)  ){
+        vert.cap = 2;
+      }
+      
+
+      if( _Drawing == false ){
+       //float camVal = projectOnLine( vert.pos , _CamPos , _CamPos + _CamDir * 1000 , .2  );
+      
+        float3 project = projectOnLine( vert.pos , _CamPos , _CamPos - _CamDir * 100   );
+        
+        if( length(project-vert.pos) < .2 && dot( _CamDir , project ) > 0){
+          force -=  .1* _TouchDown* .05* normalize( project-vert.pos)/length(project-vert.pos ) ;
+        }
+
+        if( length(project-_CamPos) < .2){
+          force -=  .1* .05* normalize( _CamPos-vert.pos)/length(_CamPos-vert.pos ) ;
+        }
+
+      }
+
+      if( int(vert.id) == _CurrentVert ){
+
+        float3 p =  _Position;
+        float3 v =  _Velocity;
+        
+        vert.pos = p;// + v * v * v * 10000;
+        vert.oPos  = p;
+        vert.extraInfo.x =  length( v );
+        vert.cap   = _Cap;
+        vert.width = _Width;
+
+        force = float3(0,0,0);
+
+      }
+       
+
+      float3 vel = getVel( vert.pos , vert.oPos);
+
+      float3 acceleration = force;
+
+      float dampening = .95;//.99999;// - vert.life * .01;
+      float3 next = vert.pos + vel * dampening  + acceleration * _DeltaTime * _DeltaTime;
+
+      vert.oPos = vert.pos;
+      vert.pos = next;  
+
+    }
+
+
+    vertBuffer[pID] = vert;
+  }
+
+
+  
+}

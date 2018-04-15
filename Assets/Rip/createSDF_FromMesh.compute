@@ -1,0 +1,275 @@
+#pragma kernel GetDepth
+#pragma kernel GetFinalDist
+#pragma kernel GetNormal
+#pragma kernel GetAO
+
+
+int _NumVerts;
+int _NumTris;
+int _VolDim;
+int _CurrentTri;
+
+float3 _Extents;
+
+
+
+  struct Vert{
+
+    float used;
+    float3 pos;
+    float3 vel;
+    float3 nor;
+    float2 uv;
+
+    float3 targetPos;
+
+    float3 debug;
+  };
+
+
+#include "Chunks/sdfStruct.cginc"
+
+
+
+
+RWStructuredBuffer<Vert> vertBuffer;
+RWStructuredBuffer<int> triBuffer;
+RWStructuredBuffer<SDF> volumeBuffer;
+
+
+#define NR_THREADS 64
+
+
+
+float dot2( in float3 v ) { return dot(v,v); }
+float2 udTriangle( float3 p, float3 a, float3 b, float3 c )
+{
+    float3 ba = b - a; float3 pa = p - a;
+    float3 cb = c - b; float3 pb = p - b;
+    float3 ac = a - c; float3 pc = p - c;
+    float3 nor = cross( ba, ac );
+
+    float dist =  sqrt(
+    (sign(dot(cross(ba,nor),pa)) +
+     sign(dot(cross(cb,nor),pb)) +
+     sign(dot(cross(ac,nor),pc))<2.0)
+     ?
+     min( min(
+     dot2(ba*clamp(dot(ba,pa)/dot2(ba),0.0,1.0)-pa),
+     dot2(cb*clamp(dot(cb,pb)/dot2(cb),0.0,1.0)-pb) ),
+     dot2(ac*clamp(dot(ac,pc)/dot2(ac),0.0,1.0)-pc) )
+     :
+     dot(nor,pa)*dot(nor,pa)/dot2(nor) );
+
+
+    float m = dot( nor , normalize(p-a));
+    if( m < 0){
+      m = 1;
+    }else{
+      m = -1;
+    }
+
+    return float2( dist , m );
+
+
+
+}
+
+float3 calcNormal( in float3 pos , float3 p1 ,  float3 p2 ,float3 p3 ){
+
+        float3 eps = float3( 0.0001, 0.0, 0.0 );
+        float3 nor = float3(
+            udTriangle(pos+eps.xyy,p1,p2,p3).x -udTriangle(pos-eps.xyy,p1,p2,p3).x,
+            udTriangle(pos+eps.yxy,p1,p2,p3).x -udTriangle(pos-eps.yxy,p1,p2,p3).x,
+            udTriangle(pos+eps.yyx,p1,p2,p3).x -udTriangle(pos-eps.yyx,p1,p2,p3).x );
+        return normalize(nor);
+
+      }
+
+
+
+
+[numthreads(NR_THREADS,1,1)]
+void GetDepth(uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+
+
+    int pID = threadID + u3GroupID * NR_THREADS;
+
+
+  if(pID < _VolDim * _VolDim * _VolDim ){
+    int xID = pID % _VolDim;
+    int yID = (pID / (_VolDim)) % _VolDim;
+    int zID = pID / (_VolDim * _VolDim);
+
+    float x = float(xID) / float(_VolDim);
+    float y = float(yID) / float(_VolDim);
+    float z = float(zID) / float(_VolDim);
+
+    int flip = pID % 2;
+
+
+    float3 p = (float3(x,y,z)-float3(.5 , .5 , .5)) * float3(1,1,1)*2;//_Extents;
+
+    float3 p1 = vertBuffer[triBuffer[_CurrentTri+0]].pos;
+    float3 p2 = vertBuffer[triBuffer[_CurrentTri+1]].pos;
+    float3 p3 = vertBuffer[triBuffer[_CurrentTri+2]].pos;
+
+    float2 dist = udTriangle( p , p1,p2,p3);
+   
+
+
+    SDF sdf = volumeBuffer[pID];
+
+    float minDist = sdf.dist;
+    float pn = sdf.pn;
+    float3 nor = sdf.nor;
+
+    if( dist.x < abs(minDist) ){
+      minDist = dist.x;
+      pn = dist.y;
+      nor = calcNormal(p,p1,p2,p3);
+    }
+
+    sdf.dist = minDist;
+    sdf.nor = nor;//float3( 0, 1, 0);
+    sdf.pn = pn;
+    sdf.debug = float2(minDist,z);
+    volumeBuffer[pID]=  sdf;
+  }
+  
+}
+
+
+
+
+int GetID( int x , int y , int z ){
+
+  if( x >= _VolDim || x < 0 || y >= _VolDim || y < 0 ||z >= _VolDim || z < 0  ){
+    return -1;
+  }else{
+    return x + y * _VolDim + z * _VolDim * _VolDim;
+   // return x* _VolDim * _VolDim + y * _VolDim + z;
+  }
+
+}
+
+
+[numthreads(NR_THREADS,1,1)]
+void GetFinalDist (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+
+
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+  if(pID < _VolDim * _VolDim * _VolDim ){
+    volumeBuffer[pID].dist = volumeBuffer[pID].dist;// * volumeBuffer[pID].pn;
+  }
+  
+}
+
+
+[numthreads(NR_THREADS,1,1)]
+void GetNormal (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+
+
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+  if(pID < _VolDim * _VolDim * _VolDim ){
+
+
+
+    SDF sdf = volumeBuffer[pID];
+
+
+    int xID =  pID % _VolDim;
+    int yID = (pID / (_VolDim)) % _VolDim;
+    int zID =  pID / (_VolDim * _VolDim);
+
+    int x0 = GetID(xID + 1, yID , zID);
+    int x1 = GetID(xID - 1, yID , zID);
+
+    int y0 = GetID(xID , yID+ 1 , zID);
+    int y1 = GetID(xID , yID- 1 , zID);
+
+    int z0 = GetID(xID , yID , zID + 1);
+    int z1 = GetID(xID , yID , zID - 1);
+
+    float X0 = (x0 >= 0) ? volumeBuffer[x0].dist : sdf.dist;
+    float X1 = (x1 >= 0) ? volumeBuffer[x1].dist : sdf.dist;
+
+    float Y0 = (y0 >= 0) ? volumeBuffer[y0].dist : sdf.dist;
+    float Y1 = (y1 >= 0) ? volumeBuffer[y1].dist : sdf.dist;
+
+    float Z0 = (z0 >= 0) ? volumeBuffer[z0].dist : sdf.dist;
+    float Z1 = (z1 >= 0) ? volumeBuffer[z1].dist : sdf.dist;
+
+
+    float3 n = float3(
+        X0 - X1,
+        Y0 - Y1,
+        Z0 - Z1
+      );
+
+
+    if( length(n) > 0){
+      n = normalize(n);//normalize(n);
+    }else{
+      n = float3(0,1,0);
+    }
+    volumeBuffer[pID].nor = n;
+  }
+  
+}
+
+
+[numthreads(NR_THREADS,1,1)]
+void GetAO(uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+
+
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+  if(pID < _VolDim * _VolDim * _VolDim ){
+
+    SDF sdf = volumeBuffer[pID];
+
+    int xID =  pID % _VolDim;
+    int yID = (pID / (_VolDim)) % _VolDim;
+    int zID =  pID / (_VolDim * _VolDim);
+
+    int x0 = GetID(xID + 1, yID , zID);
+    int x1 = GetID(xID - 1, yID , zID);
+
+    int y0 = GetID(xID , yID+ 1 , zID);
+    int y1 = GetID(xID , yID- 1 , zID);
+
+    int z0 = GetID(xID , yID , zID + 1);
+    int z1 = GetID(xID , yID , zID - 1);
+
+    float X0 = (x0 >= 0) ? volumeBuffer[x0].dist * volumeBuffer[x0].pn : sdf.dist * sdf.pn;
+    float X1 = (x1 >= 0) ? volumeBuffer[x1].dist * volumeBuffer[x1].pn : sdf.dist * sdf.pn;
+
+    float Y0 = (y0 >= 0) ? volumeBuffer[y0].dist * volumeBuffer[y0].pn : sdf.dist * sdf.pn;
+    float Y1 = (y1 >= 0) ? volumeBuffer[y1].dist * volumeBuffer[y1].pn : sdf.dist * sdf.pn;
+
+    float Z0 = (z0 >= 0) ? volumeBuffer[z0].dist * volumeBuffer[z0].pn : sdf.dist * sdf.pn;
+    float Z1 = (z1 >= 0) ? volumeBuffer[z1].dist * volumeBuffer[z1].pn : sdf.dist * sdf.pn;
+
+    float3 n = float3(
+        X0 - X1 ,
+        Y0 - Y1 ,
+        Z0 - Z1
+      );
+
+
+    if( length(n) > 0){
+      n = normalize(n);//normalize(n);
+    }else{
+      n = float3(0,1,0);
+    }
+
+
+    volumeBuffer[pID].ao = 1;
+  }
+  
+}
+
+

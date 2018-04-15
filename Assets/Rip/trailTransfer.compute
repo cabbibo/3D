@@ -1,0 +1,118 @@
+﻿#pragma kernel CSMain
+
+
+
+int _TotalVerts;
+int _TailSize;
+int _TotalOld;
+
+float3 _Camera;
+
+
+
+
+int _VolDim;
+#include "Chunks/sdfStruct.cginc"
+
+RWStructuredBuffer<SDF> volumeBuffer;
+
+
+struct Transfer {
+  float3 vertex;
+  float3 normal;
+  float3 tan;
+  float2 uv;
+  float3 debug;
+};
+
+RWStructuredBuffer<float4>  vertBuffer;
+RWStructuredBuffer<Transfer> transferBuffer;
+
+
+int GetID( float3 pos ){
+
+  if( abs(pos.x) < 1 &&abs(pos.y) < 1 &&abs(pos.z) < 1){
+  int x = clamp( floor(((pos.x + 1)/2) * _VolDim),0,_VolDim); 
+  int y = clamp( floor(((pos.y + 1)/2) * _VolDim),0,_VolDim); 
+  int z = clamp( floor(((pos.z + 1)/2) * _VolDim),0,_VolDim); 
+
+  //return x  + y * _VolDim + z * _VolDim * _VolDim;
+  return x + y * _VolDim + z * _VolDim * _VolDim;
+  }else{
+    return -1;
+  }
+
+
+}
+#include "Chunks/noise.cginc"
+
+#define NR_THREADS 64
+[numthreads(NR_THREADS,1,1)]
+void CSMain (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+  
+  // Get the id using thread / group indices
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+  if( pID < _TotalVerts ){
+
+    int quadID = floor( (float(pID) / 2));
+    int particleID = floor(quadID / (_TailSize));
+
+    int rowID = quadID % (_TailSize);
+    int vertID = int(floor( (float(pID) / 2)));
+    int triID = id % 2;
+
+    if( particleID * _TailSize + rowID+1   < _TotalOld ){
+      
+      float4 v1  = vertBuffer[particleID * _TailSize + rowID     ];
+      float4 v2  = vertBuffer[particleID * _TailSize + rowID+1   ];
+
+      //if( v1.w > 0.1){
+
+        float3 dir = v1.xyz -v2.xyz;
+        float3 nor =  normalize(v1.xyz-_Camera);
+
+
+        int id = GetID(v1.xyz);
+        float dist = 1;
+         if( id < _VolDim * _VolDim *_VolDim && id >= 0 ){
+           nor = volumeBuffer[id].nor;
+           dist = volumeBuffer[id].dist;
+         }
+
+
+        float3 tan1 = normalize(cross( dir , nor ));
+
+        float y =  float(float(rowID) / float(_TailSize));
+
+        float width  = .05 * min( (1-v1.w) * 5 , v1.w);
+
+        float3 p1 = v1.xyz - tan1 * width;
+        float3 p2 = v1.xyz + tan1 * width;
+
+        float3 fPos = float3(0,0,0);
+        float3 fEye = float3(0,0,0);
+        float3 fNor = float3(0,0,0);
+        float2 fUV = float2(0,0);
+
+        if( triID == 0){ fPos = p1; fNor = nor;  fEye=dir ;fUV  = float2( 0, float(rowID) / float(_TailSize ));}
+        if( triID == 1){ fPos = p2; fNor = nor;  fEye=dir ;fUV  = float2(  1, float(rowID) / float(_TailSize ));}
+
+
+        int transferIndex = pID;
+        Transfer transfer = transferBuffer[pID];
+
+        transfer.vertex = fPos;
+        transfer.normal = fNor;
+        transfer.tan = fEye;
+        transfer.uv = fUV;
+        transfer.debug = float3( float(rowID) / float(_TailSize) ,v1.w,dist);
+
+        transferBuffer[pID] = transfer;
+      //}
+
+   }
+
+  }
+
+}

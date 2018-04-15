@@ -1,0 +1,175 @@
+﻿#pragma kernel CSMain
+
+struct Vert
+{
+  float3 pos;
+  float3 nor;
+};
+
+
+#include "Chunks/sdfStruct.cginc"
+#include "Chunks/marchingCubeTables.cginc"
+SamplerState _LinearClamp;
+
+float _Target;// = 0.04;
+
+int _VolDim;
+
+//StructuredBuffer<int> _triangleConnectionBuffer;
+//StructuredBuffer<int> _cubeEdgeBuffer;
+StructuredBuffer<SDF> _volumeBuffer;
+RWStructuredBuffer<Vert> _vertBuffer;
+
+// edgeConnection lists the index of the endpoint vertices for each of the 12 edges of the cube
+static int2 edgeConnection[12] =
+{
+  int2(0,1), int2(1,2), int2(2,3), int2(3,0), int2(4,5), int2(5,6), int2(6,7), int2(7,4), int2(0,4), int2(1,5), int2(2,6), int2(3,7)
+};
+
+// edgeDirection lists the direction vector (vertex1-vertex0) for each edge in the cube
+static float3 edgeDirection[12] =
+{
+  float3(1.0f, 0.0f, 0.0f),float3(0.0f, 1.0f, 0.0f),float3(-1.0f, 0.0f, 0.0f),float3(0.0f, -1.0f, 0.0f),
+  float3(1.0f, 0.0f, 0.0f),float3(0.0f, 1.0f, 0.0f),float3(-1.0f, 0.0f, 0.0f),float3(0.0f, -1.0f, 0.0f),
+  float3(0.0f, 0.0f, 1.0f),float3(0.0f, 0.0f, 1.0f),float3(0.0f, 0.0f, 1.0f),float3(0.0f,  0.0f, 1.0f)
+};
+
+// vertexOffset lists the positions, relative to vertex0, of each of the 8 vertices of a cube
+static float3 vertexOffset[8] =
+{
+  float3(0, 0, 0),float3(1, 0, 0),float3(1, 1, 0),float3(0, 1, 0),
+  float3(0, 0, 1),float3(1, 0, 1),float3(1, 1, 1),float3(0, 1, 1)
+};
+
+void FillCube(int x, int y, int z, out float cube[8])
+{
+  cube[0] = _volumeBuffer[x + y * _VolDim + z * _VolDim * _VolDim].dist;
+  cube[1] = _volumeBuffer[(x + 1) + y * _VolDim + z * _VolDim * _VolDim].dist;
+  cube[2] = _volumeBuffer[(x + 1) + (y + 1) * _VolDim + z * _VolDim * _VolDim].dist;
+  cube[3] = _volumeBuffer[x + (y + 1) * _VolDim + z * _VolDim * _VolDim].dist;
+
+  cube[4] = _volumeBuffer[x + y * _VolDim + (z + 1) * _VolDim * _VolDim].dist;
+  cube[5] = _volumeBuffer[(x + 1) + y * _VolDim + (z + 1) * _VolDim * _VolDim].dist;
+  cube[6] = _volumeBuffer[(x + 1) + (y + 1) * _VolDim + (z + 1) * _VolDim * _VolDim].dist;
+  cube[7] = _volumeBuffer[x + (y + 1) * _VolDim + (z + 1) * _VolDim * _VolDim].dist;
+}
+
+
+float3 getNor(float3 position){
+  
+}
+// GetOffset finds the approximate point of intersection of the surface
+// between two points with the values v1 and v2
+float GetOffset(float v1, float v2)
+{
+  float delta = v2 - v1;
+  return (delta == 0.0f) ? 0.5f : (_Target - v1) / delta;
+}
+
+
+#define NR_THREADS 64
+[numthreads(NR_THREADS,1,1)]
+void CSMain (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+  
+  // Get the id using thread / group indices
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+
+  int xID =  pID % _VolDim;
+  int yID = (pID / (_VolDim)) % _VolDim;
+  int zID =  int(float(pID) / (_VolDim * _VolDim));
+
+
+  if( pID >= _VolDim * _VolDim * _VolDim ) return;
+
+
+  //Dont generate verts at the edge as they dont have 
+  //neighbours to make a cube from and the normal will 
+  //not be correct around border.
+  if (xID >= _VolDim - 1) return;
+  if (yID >= _VolDim - 1) return;
+  if (zID >= _VolDim - 1) return;
+
+  float3 pos =  (float3(float(xID),float(yID),float(zID)) / float3(_VolDim,_VolDim,_VolDim )); //float3(id);
+  float3 centre = float3(_VolDim, 0, 1) / 2.0;
+
+  float cube[8];
+  FillCube(xID, yID, zID, cube);
+
+  int i = 0;
+  int flagIndex = 0;
+  float3 edgeVertex[12];
+
+  //Find which vertices are inside of the surface and which are outside
+  for (i = 0; i < 8; i++){
+    if (cube[i] <= _Target) flagIndex |= 1 << i;
+  }
+
+  //Find which edges are intersected by the surface
+  int edgeFlags = edgeTable[flagIndex];
+
+  // no connections, return
+  if (edgeFlags == 0) return;
+
+  //Find the point of intersection of the surface with each edge
+  for (i = 0; i < 12; i++){
+
+    //if there is an intersection on this edge
+    if ((edgeFlags & (1 << i)) != 0)
+    {
+      float offset = GetOffset(cube[edgeConnection[i].x], cube[edgeConnection[i].y]);
+
+      //offset = .1;
+
+      edgeVertex[i] = pos + (vertexOffset[edgeConnection[i].x]+ offset * edgeDirection[i])/_VolDim;
+    }
+  }
+
+  float3 size = float3(_VolDim - 1, _VolDim - 1, _VolDim - 1);
+
+
+  //Save the triangles that were found. There can be up to five per cube
+  for (i = 0; i < 5; i++){
+    //If the connection table is not -1 then this a triangle.
+
+    int val = triTable[flagIndex][ 3 * i];
+    if(  val >= 0){
+
+
+      float3 position;
+
+      float3 center = float3(_VolDim, 0, _VolDim) / 2.0;
+
+
+      position = pos + .1 * float3( sin(pID +0) , sin((pID+0) * 3) , sin((pID +0)*10));
+      position = edgeVertex[triTable[flagIndex][3* i+0]];//-center;
+      _vertBuffer[pID * 15 + (3 * i + 0)].pos = (position - float3(.5,.5,.5)) * 2;///CreateVertex(position, centre, size);
+      _vertBuffer[pID * 15 + (3 * i + 0)].nor = _volumeBuffer[pID].nor;
+
+      position = pos + .1 * float3( sin(pID +1) , sin((pID+1) * 3) , sin((pID +1)*10));
+      position = edgeVertex[triTable[flagIndex][ 3 * i+1]];//-center;
+      _vertBuffer[pID * 15 + (3 * i + 1)].pos = (position - float3(.5,.5,.5)) * 2;
+      _vertBuffer[pID * 15 + (3 * i + 1)].nor = getNor(position);//_volumeBuffer[pID].nor;
+
+      position = pos + .1 * float3( sin(pID +2) , sin((pID+2) * 3) , sin((pID +2)*10));
+      position = edgeVertex[triTable[flagIndex][ 3 * i+2]];//-center; 
+      _vertBuffer[pID * 15 + (3 * i + 2)].pos = (position - float3(.5,.5,.5)) * 2;
+      _vertBuffer[pID * 15 + (3 * i + 2)].nor = _volumeBuffer[pID].nor;
+
+   }
+  }
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+

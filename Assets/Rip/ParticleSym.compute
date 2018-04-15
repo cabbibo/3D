@@ -1,0 +1,157 @@
+﻿#pragma kernel CSMain
+
+float _DT;
+float _Time;
+
+int _NumVerts;
+int _VolDim;
+float3 _Pos;
+float3 _Dir;
+
+#include "Chunks/snoise.cginc"
+#include "Chunks/noise.cginc"
+#include "Chunks/sdfStruct.cginc"
+
+float4x4 transform;
+
+
+  struct Vert{
+
+   float life;
+   float3 pos;
+   float3 vel;
+   float3 nor;
+   float2 uv;
+   float3 targetPos;
+   float3 debug;
+
+  };
+
+
+
+
+RWStructuredBuffer<Vert> vertBuffer;
+RWStructuredBuffer<SDF> volumeBuffer;
+
+
+
+// Not too fast!
+float3 getVel( float3 p1 , float3 p2 ){
+
+  float3 v = p1 - p2;
+
+  if( length( v ) > 1.5){ v = normalize( v ) *1.5; }
+  return v;
+}
+
+
+
+#include "Chunks/curlNoise.cginc"
+
+
+
+
+#define NR_THREADS 64
+
+
+
+int GetID( float3 pos ){
+
+  if( abs(pos.x) < 1 &&abs(pos.y) < 1 &&abs(pos.z) < 1){
+  int x = clamp( floor(((pos.x + 1)/2) * _VolDim),0,_VolDim); 
+  int y = clamp( floor(((pos.y + 1)/2) * _VolDim),0,_VolDim); 
+  int z = clamp( floor(((pos.z + 1)/2) * _VolDim),0,_VolDim); 
+
+  //return x  + y * _VolDim + z * _VolDim * _VolDim;
+  return x + y * _VolDim + z * _VolDim * _VolDim;
+  }else{
+    return -1;
+  }
+
+
+}
+
+float3 calcNor( float3 pos ){
+  
+}
+
+
+[numthreads(NR_THREADS,1,1)]
+void CSMain (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 id : SV_DispatchThreadID) {
+
+
+  int pID = threadID + u3GroupID * NR_THREADS;
+
+  int flip = pID % 2;
+
+  if( pID < _NumVerts ){
+
+    Vert vert = vertBuffer[ pID ];
+
+    float3 force = float3(0,0,0);
+    //force -=100*normalize(vert.pos);//f loat3(0,-100,0);
+
+      int id = GetID(vert.pos);
+     if( id < _VolDim * _VolDim *_VolDim && id >= 0 ){
+       SDF vol = volumeBuffer[id];
+
+
+
+       float3 fNor = vol.nor;// * 2 -1;
+
+
+
+       vert.debug = normalize(vol.nor) * vol.dist;
+
+       /*if( vol.dist < 0.001 ){
+        //force += vert.pos;//normalize(vol.nor);// / vol.dist;
+        vert.life -= .01;
+       // force += vert.vel * 100;
+      }else{*/
+
+        force += 1000 * vol.dist* vol.dist * curlNoise( vert.pos * 10 );
+
+        //force += 30 *  curlNoise( vert.pos * 10 );
+
+        force -=  1000 * normalize(fNor) * (vol.dist -.05);// * (vol.dist - .05);//clamp(,0,1);
+     /*   if( vol.dist < .05 ){
+        force +=  30 * normalize(fNor) / vol.dist;
+     // }*/
+
+        force -= normalize(cross( _Dir , fNor)) * 100;
+      
+     }else{
+      vert.life -= .01;
+      // force -= 100*vert.pos;
+     }
+
+     //force += (1-vert.life) * float3(0,1,0) * 50;
+   //  force += _Dir  * 70;//* vert.life * vert.life * vert.life * 100;
+
+     force += normalize(cross( float3( 0,1,0) , vert.pos)) * 100;
+
+
+      float dampening = .9;//.99999;// - vert.life * .01;
+     vert.vel += force * _DT * _DT;
+     vert.pos += vert.vel* _DT;
+     vert.vel *= dampening;
+
+
+   
+      vert.life -= .001;
+      if( vert.life < 0 ){
+        vert.life = 1;
+        vert.pos = float3((hash(float(pID)*109)-.5) *1, (hash(float(pID)*131)-.5) *1, (hash(float(pID)*120)-.5) * 1);
+        //vert.pos += _Pos;
+        vert.vel = float3(0,0,0);
+      }
+
+
+    //vert.pos = float3( (hash(float(pID))-.5) * 2, 1.3, (hash(float(pID)*100)-.5) * 2);
+
+    vertBuffer[pID] = vert;
+  }
+
+
+  
+}
