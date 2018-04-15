@@ -55,9 +55,14 @@ void FillCube(int x, int y, int z, out float cube[8])
 }
 
 
-float3 getNor(float3 position){
-  
-}
+/*float3 getNor(float3 position){
+
+
+
+
+
+}*/
+
 // GetOffset finds the approximate point of intersection of the surface
 // between two points with the values v1 and v2
 float GetOffset(float v1, float v2)
@@ -149,7 +154,7 @@ void CSMain (uint threadID : SV_GroupIndex, uint3 u3GroupID : SV_GroupID, uint3 
       position = pos + .1 * float3( sin(pID +1) , sin((pID+1) * 3) , sin((pID +1)*10));
       position = edgeVertex[triTable[flagIndex][ 3 * i+1]];//-center;
       _vertBuffer[pID * 15 + (3 * i + 1)].pos = (position - float3(.5,.5,.5)) * 2;
-      _vertBuffer[pID * 15 + (3 * i + 1)].nor = getNor(position);//_volumeBuffer[pID].nor;
+      _vertBuffer[pID * 15 + (3 * i + 1)].nor = _volumeBuffer[pID].nor;//1getNor(position);//_volumeBuffer[pID].nor;
 
       position = pos + .1 * float3( sin(pID +2) , sin((pID+2) * 3) , sin((pID +2)*10));
       position = edgeVertex[triTable[flagIndex][ 3 * i+2]];//-center; 
